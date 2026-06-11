@@ -1,0 +1,209 @@
+(*              ---> Authentication (Login) <---
+
+    M1  :  U     ==>  Bend  : Initiate Login
+    M2  :  Bend  ==>  KC    : [N1, (oidcAuthReq)]_https
+    M3  :  KC    ==>  ASEV  : [N1, (registryCheckReq)]_https
+    M4  :  ASEV  ==>  KC    : [N1, (registryCheckRes)]_https
+    M5  :  KC    ==>  Bend  : [N1, (oidcAuthRes)]_https
+    M6  :  Bend  ==>  ASEV  : [N1, (attestCheckReq)]_https
+    M7  :  ASEV  ==>  KC    : [N1, (attestCheckRes)]_https
+    M8  :  KC    ==>  U     : Login Successful
+
+*)
+
+
+free c: channel.
+
+type host.
+type nonce.
+type pkey.
+type skey.
+
+
+(* Public key encryption *)
+fun pk(skey): pkey.
+fun encrypt(bitstring, pkey): bitstring.
+reduc forall x: bitstring, y: skey; decrypt(encrypt(x,pk(y)),y) = x.
+
+(* Signatures *)
+fun sign(bitstring, skey): bitstring.
+reduc forall m: bitstring, k: skey; checksign(sign(m,k), pk(k)) = m.
+
+(* Hash function *)
+fun hash(bitstring): bitstring.
+
+
+(* Secrecy assumptions *)
+not attacker(new skU).
+not attacker(new skBend).
+not attacker(new skASEV).
+not attacker(new skKC).
+
+
+(* Honest host names *)
+free U, Bend, ASEV, KC: host.
+
+(* Secret declaration *)
+free initiateLogin, oidcAuthReq, oidcAuthRes, registryCheckReq, registryCheckRes,
+     attestCheckReq, attestCheckRes, loginSuccess : bitstring[private].
+
+(* Secrecy queries *)
+query attacker(oidcAuthRes);
+      attacker(registryCheckRes);
+      attacker(attestCheckRes);
+      attacker(loginSuccess).
+
+event beginLogin(bitstring).
+event endLogin(bitstring).
+event beginOidcAuth(bitstring).
+event endOidcAuth(bitstring).
+event beginRegistryCheck(bitstring).
+event endRegistryCheck(bitstring).
+event beginAttestCheck(bitstring).
+event endAttestCheck(bitstring).
+
+
+(* Correspondence queries *)
+query initiateLogin: bitstring, loginSuccess: bitstring;
+      inj-event(endLogin(loginSuccess)) ==> inj-event(beginLogin(initiateLogin)).
+
+query oidcAuthReq: bitstring, oidcAuthRes: bitstring;
+      event(endOidcAuth(oidcAuthRes)) ==> event(beginOidcAuth(oidcAuthReq)).
+
+query registryCheckReq: bitstring, registryCheckRes: bitstring;
+      inj-event(endRegistryCheck(registryCheckRes)) ==> inj-event(beginRegistryCheck(registryCheckReq)).
+
+query attestCheckReq: bitstring, attestCheckRes: bitstring;
+      inj-event(endAttestCheck(attestCheckRes)) ==> inj-event(beginAttestCheck(attestCheckReq)).
+
+query oidcAuthRes: bitstring, loginSuccess: bitstring;
+      inj-event(endLogin(loginSuccess)) ==> inj-event(endOidcAuth(oidcAuthRes)).
+
+
+let processU(skU: skey, pkBend: pkey, pkKC: pkey) =
+    in(c, xBend: host);
+    if (xBend = Bend) then
+    let pkU = pk(skU) in
+    new N1: nonce;
+    event beginLogin(initiateLogin);
+
+    (* M1 *)
+    out(c, encrypt((N1, sign(initiateLogin, skU), hash(initiateLogin)), pkBend));
+
+    (* M8 *)
+    in(c, encM8: bitstring);
+    let (xN1: nonce, signedLoginSuccess: bitstring, hashedLoginSuccess: bitstring) = decrypt(encM8, skU) in
+    let (M8: bitstring) = checksign(signedLoginSuccess, pkKC) in
+    if (hashedLoginSuccess = hash(M8)) then
+    if (xN1 = N1) then
+    if (M8 = loginSuccess) then
+    event endLogin(M8).
+
+
+let processBend(skBend: skey, pkU: pkey, pkKC: pkey, pkASEV: pkey) =
+    in(c, (xU: host, xKC: host, xASEV: host));
+    if (xU = U) then
+    if (xKC = KC) then
+    if (xASEV = ASEV) then
+    let pkBend = pk(skBend) in
+
+    (* M1 *)
+    in(c, encM1: bitstring);
+    let (N1: nonce, signedInitiateLogin: bitstring, hashedInitiateLogin: bitstring) = decrypt(encM1, skBend) in
+    let (M1: bitstring) = checksign(signedInitiateLogin, pkU) in
+    if (hashedInitiateLogin = hash(M1)) then
+    event beginOidcAuth(oidcAuthReq);
+    (* M2 *)
+    out(c, encrypt((N1, sign(oidcAuthReq, skBend), hash(oidcAuthReq)), pkKC));
+
+    (* M5 *)
+    in(c, encM5: bitstring);
+    let (xN1: nonce, signedOidcAuthRes: bitstring, hashedOidcAuthRes: bitstring) = decrypt(encM5, skBend) in
+    let (M5pair: bitstring) = checksign(signedOidcAuthRes, pkKC) in
+    if (hashedOidcAuthRes = hash(M5pair)) then
+    if (xN1 = N1) then
+    if (M5pair = (oidcAuthReq, oidcAuthRes)) then
+    event endOidcAuth(oidcAuthRes);
+    (* M6 *)
+    out(c, encrypt((N1, sign(attestCheckReq, skBend), hash(attestCheckReq)), pkASEV)).
+
+
+let processKC(skKC: skey, pkBend: pkey, pkASEV: pkey, pkU: pkey) =
+    in(c, (xBend: host, xASEV: host, xU: host));
+    if (xBend = Bend) then
+    if (xASEV = ASEV) then
+    if (xU = U) then
+    let pkKC = pk(skKC) in
+
+    (* M2 *)
+    in(c, encM2: bitstring);
+    let (N1: nonce, signedOidcAuthReq: bitstring, hashedOidcAuthReq: bitstring) = decrypt(encM2, skKC) in
+    let (M2: bitstring) = checksign(signedOidcAuthReq, pkBend) in
+    if (hashedOidcAuthReq = hash(M2)) then
+    event beginRegistryCheck(registryCheckReq);
+    (* M3 *)
+    out(c, encrypt((N1, sign(registryCheckReq, skKC), hash(registryCheckReq)), pkASEV));
+
+    (* M4 *)
+    in(c, encM4: bitstring);
+    let (xN1: nonce, signedRegistryCheckRes: bitstring, hashedRegistryCheckRes: bitstring) = decrypt(encM4, skKC) in
+    let (M4pair: bitstring) = checksign(signedRegistryCheckRes, pkASEV) in
+    if (hashedRegistryCheckRes = hash(M4pair)) then
+    if (xN1 = N1) then
+    if (M4pair = (registryCheckReq, registryCheckRes)) then
+    event endRegistryCheck(registryCheckRes);
+    event endOidcAuth(oidcAuthRes);
+    (* M5 *)
+    out(c, encrypt((N1, sign((M2, oidcAuthRes), skKC), hash((M2, oidcAuthRes))), pkBend));
+
+    (* M7 *)
+    in(c, encM7: bitstring);
+    let (yN1: nonce, signedAttestCheckRes: bitstring, hashedAttestCheckRes: bitstring) = decrypt(encM7, skKC) in
+    let (M7pair: bitstring) = checksign(signedAttestCheckRes, pkASEV) in
+    if (hashedAttestCheckRes = hash(M7pair)) then
+    if (yN1 = N1) then
+    if (M7pair = (attestCheckReq, attestCheckRes)) then
+    (* M8 *)
+    out(c, encrypt((N1, sign(loginSuccess, skKC), hash(loginSuccess)), pkU)).
+
+
+let processASEV(skASEV: skey, pkKC: pkey, pkBend: pkey) =
+    in(c, (xKC: host, xBend: host));
+    if (xKC = KC) then
+    if (xBend = Bend) then
+    let pkASEV = pk(skASEV) in
+
+    (* M3 *)
+    in(c, encM3: bitstring);
+    let (N1: nonce, signedRegistryCheckReq: bitstring, hashedRegistryCheckReq: bitstring) = decrypt(encM3, skASEV) in
+    let (M3: bitstring) = checksign(signedRegistryCheckReq, pkKC) in
+    if (hashedRegistryCheckReq = hash(M3)) then
+    (* M4 *)
+    out(c, encrypt((N1, sign((M3, registryCheckRes), skASEV), hash((M3, registryCheckRes))), pkKC));
+
+    (* M6 *)
+    in(c, encM6: bitstring);
+    let (xN1: nonce, signedAttestCheckReq: bitstring, hashedAttestCheckReq: bitstring) = decrypt(encM6, skASEV) in
+    let (M6: bitstring) = checksign(signedAttestCheckReq, pkBend) in
+    if (hashedAttestCheckReq = hash(M6)) then
+    if (M6 = attestCheckReq) then
+    event beginAttestCheck(M6);
+    (* M7 *)
+    out(c, encrypt((xN1, sign((M6, attestCheckRes), skASEV), hash((M6, attestCheckRes))), pkKC));
+    event endAttestCheck(attestCheckRes).
+
+
+process
+    new skU: skey;
+    new skBend: skey;
+    new skASEV: skey;
+    new skKC: skey;
+    let pkU = pk(skU) in out(c, pkU);
+    let pkBend = pk(skBend) in out(c, pkBend);
+    let pkASEV = pk(skASEV) in out(c, pkASEV);
+    let pkKC = pk(skKC) in out(c, pkKC);
+
+    ( (!processU(skU, pkBend, pkKC))
+    | (!processBend(skBend, pkU, pkKC, pkASEV))
+    | (!processKC(skKC, pkBend, pkASEV, pkU))
+    | (!processASEV(skASEV, pkKC, pkBend)) )
