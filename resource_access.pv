@@ -1,14 +1,17 @@
 (*              ---> Resource Access <---
 
     M1  :  U       ==>  KC      : [N1, (resourceAccessReq)]_https
-    M2  :  Bend    ==>  ASEV    : [N1, (attestCheckReq)]_https
+    M2  :  KC      ==>  ASEV    : [N1, (attestCheckReq)]_https
     M3  :  ASEV    ==>  KC      : [N1, (attestCheckRes)]_https
-    M4  :  KC      ==>  PtclMnt : [N1, (policyEvalReq)]_https
-    M5  :  PtclMnt ==>  KC      : [N1, (policyEvalRes)]_https
-    M6  :  DCtrl   ==>  U       : [N1, (resourceAccessRes)]_https
+    M4  :  KC      ==>  ZTPE    : [N1, (policyEvalReq)]_https
+    M5  :  ZTPE    ==>  ASEV    : [N1, (verifyMfaReq)]_https
+    M6  :  Bend    ==>  U       : [N1, (mfaReq)]_https
+    M7  :  U       ==>  Bend    : [N1, (mfaRes)]_https
+    M8  :  Bend    ==>  ZTPE    : [N1, (verifyMfaRes)]_https
+    M9  :  ZTPE    ==>  DCtrl   : [N1, (policyEvalRes)]_https
+    M10 :  DCtrl   ==>  U       : [N1, (resourceAccessRes)]_https
 
-    (KC notifies Bend after M1 and DCtrl after M5 to coordinate M2 and M6.)
-
+          (ASEV notifies Bend after M5)
 *)
 
 
@@ -38,21 +41,35 @@ not attacker(new skU).
 not attacker(new skBend).
 not attacker(new skASEV).
 not attacker(new skKC).
-not attacker(new skPtclMnt).
+not attacker(new skZTPE).
 not attacker(new skDCtrl).
 
 
 (* Honest host names *)
-free U, Bend, ASEV, KC, PtclMnt, DCtrl: host.
+free U, Bend, ASEV, KC, ZTPE, DCtrl: host.
 
 (* Secret declaration *)
 free resourceAccessReq, attestCheckReq, attestCheckRes, policyEvalReq, policyEvalRes,
-     resourceAccessRes : bitstring[private].
+     verifyMfaReq, mfaReq, mfaRes, verifyMfaRes, resourceAccessRes : bitstring[private].
 
 (* Secrecy queries *)
 query attacker(attestCheckRes);
+      attacker(mfaRes);
+      attacker(verifyMfaRes);
       attacker(policyEvalRes);
       attacker(resourceAccessRes).
+
+(* --- Events by message step --- *)
+(* M1  (U → KC)         : event beginResourceAccess invokes when U sends resourceAccessReq. *)
+(* M2  (KC → ASEV)      : event beginAttestCheck invokes when KC sends attestCheckReq. *)
+(* M3  (ASEV → KC)      : event endAttestCheck marks when KC obtains attestCheckRes. *)
+(* M4  (KC → ZTPE)      : event beginPolicyEval invokes when KC sends policyEvalReq. *)
+(* M5  (ZTPE → ASEV)    : event beginVerifyMfa invokes when ZTPE sends verifyMfaReq. *)
+(* M6  (Bend → U)       : event beginMfa invokes when Bend sends mfaReq. *)
+(* M7  (U → Bend)       : event endMfa marks when Bend obtains mfaRes. *)
+(* M8  (Bend → ZTPE)    : event endVerifyMfa marks when ZTPE obtains verifyMfaRes. *)
+(* M9  (ZTPE → DCtrl)   : event endPolicyEval marks when DCtrl obtains policyEvalRes. *)
+(* M10 (DCtrl → U)      : event endResourceAccess marks when U obtains resourceAccessRes. *)
 
 event beginResourceAccess(bitstring).
 event endResourceAccess(bitstring).
@@ -60,29 +77,47 @@ event beginAttestCheck(bitstring).
 event endAttestCheck(bitstring).
 event beginPolicyEval(bitstring).
 event endPolicyEval(bitstring).
-event attestCheckComplete(bitstring).
+event beginVerifyMfa(bitstring).
+event endVerifyMfa(bitstring).
+event beginMfa(bitstring).
+event endMfa(bitstring).
 
 
 (* Correspondence queries *)
 query resourceAccessReq: bitstring, resourceAccessRes: bitstring;
-      inj-event(endResourceAccess(resourceAccessRes)) ==> inj-event(beginResourceAccess(resourceAccessReq)).
+      event(endResourceAccess(resourceAccessRes)) ==> event(beginResourceAccess(resourceAccessReq)).
 
 query attestCheckReq: bitstring, attestCheckRes: bitstring;
-      inj-event(endAttestCheck(attestCheckRes)) ==> inj-event(beginAttestCheck(attestCheckReq)).
+      event(endAttestCheck(attestCheckRes)) ==> event(beginAttestCheck(attestCheckReq)).
 
 query policyEvalReq: bitstring, policyEvalRes: bitstring;
-      inj-event(endPolicyEval(policyEvalRes)) ==> inj-event(beginPolicyEval(policyEvalReq)).
+      event(endPolicyEval(policyEvalRes)) ==> event(beginPolicyEval(policyEvalReq)).
 
-query attestCheckRes: bitstring, resourceAccessRes: bitstring;
-      inj-event(endResourceAccess(resourceAccessRes)) ==> inj-event(attestCheckComplete(attestCheckRes)).
+query verifyMfaReq: bitstring, verifyMfaRes: bitstring;
+      inj-event(endVerifyMfa(verifyMfaRes)) ==> inj-event(beginVerifyMfa(verifyMfaReq)).
 
-query policyEvalRes: bitstring, resourceAccessRes: bitstring;
-      inj-event(endResourceAccess(resourceAccessRes)) ==> inj-event(endPolicyEval(policyEvalRes)).
+query mfaReq: bitstring, mfaRes: bitstring;
+      inj-event(endMfa(mfaRes)) ==> inj-event(beginMfa(mfaReq)).
+
+query resourceAccessRes: bitstring, attestCheckRes: bitstring;
+      inj-event(endResourceAccess(resourceAccessRes)) ==> inj-event(endAttestCheck(attestCheckRes)).
+
+query resourceAccessRes: bitstring, policyEvalRes: bitstring;
+      event(endResourceAccess(resourceAccessRes)) ==> event(endPolicyEval(policyEvalRes)).
+
+(* Authorization: access is granted only after policy evaluation. *)
+(* MFA bypass: access is granted only after a completed WebAuthn/MFA proof. *)
+query resourceAccessRes: bitstring, mfaRes: bitstring;
+      event(endResourceAccess(resourceAccessRes)) ==> event(endMfa(mfaRes)).
+
+query resourceAccessRes: bitstring, verifyMfaRes: bitstring;
+      event(endResourceAccess(resourceAccessRes)) ==> event(endVerifyMfa(verifyMfaRes)).
 
 
-let processU(skU: skey, pkKC: pkey, pkDCtrl: pkey) =
-    in(c, (xKC: host, xDCtrl: host));
+let processU(skU: skey, pkKC: pkey, pkBend: pkey, pkDCtrl: pkey) =
+    in(c, (xKC: host, xBend: host, xDCtrl: host));
     if (xKC = KC) then
+    if (xBend = Bend) then
     if (xDCtrl = DCtrl) then
     let pkU = pk(skU) in
     new N1: nonce;
@@ -93,69 +128,29 @@ let processU(skU: skey, pkKC: pkey, pkDCtrl: pkey) =
 
     (* M6 *)
     in(c, encM6: bitstring);
-    let (xN1: nonce, signedResourceAccessRes: bitstring, hashedResourceAccessRes: bitstring) = decrypt(encM6, skU) in
-    let (M6: bitstring) = checksign(signedResourceAccessRes, pkDCtrl) in
-    if (hashedResourceAccessRes = hash(M6)) then
+    let (xN1: nonce, signedMfaReq: bitstring, hashedMfaReq: bitstring) = decrypt(encM6, skU) in
+    let (M6: bitstring) = checksign(signedMfaReq, pkBend) in
+    if (hashedMfaReq = hash(M6)) then
     if (xN1 = N1) then
-    if (M6 = resourceAccessRes) then
-    event endResourceAccess(M6).
+    if (M6 = mfaReq) then
+    (* M7 *)
+    out(c, encrypt((N1, sign(mfaRes, skU), hash(mfaRes)), pkBend));
+
+    (* M10 *)
+    in(c, encM10: bitstring);
+    let (yN1: nonce, signedResourceAccessRes: bitstring, hashedResourceAccessRes: bitstring) = decrypt(encM10, skU) in
+    let (M10: bitstring) = checksign(signedResourceAccessRes, pkDCtrl) in
+    if (hashedResourceAccessRes = hash(M10)) then
+    if (yN1 = N1) then
+    if (M10 = resourceAccessRes) then
+    event endResourceAccess(M10).
 
 
-let processBend(skBend: skey, pkASEV: pkey, pkKC: pkey) =
-    in(c, xKC: host);
-    if (xKC = KC) then
-    let pkBend = pk(skBend) in
-
-    (* KC trigger after M1 *)
-    in(c, encTrigger: bitstring);
-    let (N1: nonce, signedTrigger: bitstring, hashedTrigger: bitstring) = decrypt(encTrigger, skBend) in
-    let (Mtrigger: bitstring) = checksign(signedTrigger, pkKC) in
-    if (hashedTrigger = hash(Mtrigger)) then
-    (* M2 *)
-    out(c, encrypt((N1, sign(attestCheckReq, skBend), hash(attestCheckReq)), pkASEV)).
-
-
-let processASEV(skASEV: skey, pkKC: pkey, pkBend: pkey) =
-    in(c, (xBend: host, xKC: host));
-    if (xBend = Bend) then
-    if (xKC = KC) then
-    let pkASEV = pk(skASEV) in
-
-    (* M2 *)
-    in(c, encM2: bitstring);
-    let (N1: nonce, signedAttestCheckReq: bitstring, hashedAttestCheckReq: bitstring) = decrypt(encM2, skASEV) in
-    let (M2: bitstring) = checksign(signedAttestCheckReq, pkBend) in
-    if (hashedAttestCheckReq = hash(M2)) then
-    if (M2 = attestCheckReq) then
-    event beginAttestCheck(M2);
-    (* M3 *)
-    out(c, encrypt((N1, sign((M2, attestCheckRes), skASEV), hash((M2, attestCheckRes))), pkKC));
-    event endAttestCheck(attestCheckRes).
-
-
-let processPtclMnt(skPtclMnt: skey, pkKC: pkey) =
-    in(c, xKC: host);
-    if (xKC = KC) then
-    let pkPtclMnt = pk(skPtclMnt) in
-
-    (* M4 *)
-    in(c, encM4: bitstring);
-    let (N1: nonce, signedPolicyEvalReq: bitstring, hashedPolicyEvalReq: bitstring) = decrypt(encM4, skPtclMnt) in
-    let (M4: bitstring) = checksign(signedPolicyEvalReq, pkKC) in
-    if (hashedPolicyEvalReq = hash(M4)) then
-    event beginPolicyEval(M4);
-    (* M5 *)
-    out(c, encrypt((N1, sign((M4, policyEvalRes), skPtclMnt), hash((M4, policyEvalRes))), pkKC));
-    event endPolicyEval(policyEvalRes).
-
-
-let processKC(skKC: skey, pkU: pkey, pkBend: pkey, pkASEV: pkey, pkPtclMnt: pkey, pkDCtrl: pkey) =
-    in(c, (xU: host, xBend: host, xASEV: host, xPtclMnt: host, xDCtrl: host));
+let processKC(skKC: skey, pkU: pkey, pkASEV: pkey, pkZTPE: pkey) =
+    in(c, (xU: host, xASEV: host, xZTPE: host));
     if (xU = U) then
-    if (xBend = Bend) then
     if (xASEV = ASEV) then
-    if (xPtclMnt = PtclMnt) then
-    if (xDCtrl = DCtrl) then
+    if (xZTPE = ZTPE) then
     let pkKC = pk(skKC) in
 
     (* M1 *)
@@ -163,8 +158,9 @@ let processKC(skKC: skey, pkU: pkey, pkBend: pkey, pkASEV: pkey, pkPtclMnt: pkey
     let (N1: nonce, signedResourceAccessReq: bitstring, hashedResourceAccessReq: bitstring) = decrypt(encM1, skKC) in
     let (M1: bitstring) = checksign(signedResourceAccessReq, pkU) in
     if (hashedResourceAccessReq = hash(M1)) then
-    (* notify Bend to start M2 *)
-    out(c, encrypt((N1, sign(M1, skKC), hash(M1)), pkBend));
+    event beginAttestCheck(attestCheckReq);
+    (* M2 *)
+    out(c, encrypt((N1, sign(attestCheckReq, skKC), hash(attestCheckReq)), pkASEV));
 
     (* M3 *)
     in(c, encM3: bitstring);
@@ -173,35 +169,111 @@ let processKC(skKC: skey, pkU: pkey, pkBend: pkey, pkASEV: pkey, pkPtclMnt: pkey
     if (hashedAttestCheckRes = hash(M3pair)) then
     if (xN1 = N1) then
     if (M3pair = (attestCheckReq, attestCheckRes)) then
-    event attestCheckComplete(attestCheckRes);
+    event endAttestCheck(attestCheckRes);
     event beginPolicyEval(policyEvalReq);
     (* M4 *)
-    out(c, encrypt((N1, sign(policyEvalReq, skKC), hash(policyEvalReq)), pkPtclMnt));
+    out(c, encrypt((N1, sign(policyEvalReq, skKC), hash(policyEvalReq)), pkZTPE)).
+
+
+let processASEV(skASEV: skey, pkKC: pkey, pkZTPE: pkey, pkBend: pkey) =
+    in(c, (xKC: host, xZTPE: host, xBend: host));
+    if (xKC = KC) then
+    if (xZTPE = ZTPE) then
+    if (xBend = Bend) then
+    let pkASEV = pk(skASEV) in
+
+    (* M2 *)
+    in(c, encM2: bitstring);
+    let (N1: nonce, signedAttestCheckReq: bitstring, hashedAttestCheckReq: bitstring) = decrypt(encM2, skASEV) in
+    let (M2: bitstring) = checksign(signedAttestCheckReq, pkKC) in
+    if (hashedAttestCheckReq = hash(M2)) then
+    if (M2 = attestCheckReq) then
+    (* M3 *)
+    out(c, encrypt((N1, sign((M2, attestCheckRes), skASEV), hash((M2, attestCheckRes))), pkKC));
 
     (* M5 *)
     in(c, encM5: bitstring);
-    let (yN1: nonce, signedPolicyEvalRes: bitstring, hashedPolicyEvalRes: bitstring) = decrypt(encM5, skKC) in
-    let (M5pair: bitstring) = checksign(signedPolicyEvalRes, pkPtclMnt) in
-    if (hashedPolicyEvalRes = hash(M5pair)) then
-    if (yN1 = N1) then
-    if (M5pair = (policyEvalReq, policyEvalRes)) then
-    event endPolicyEval(policyEvalRes);
-    (* notify DCtrl to send M6 *)
-    out(c, encrypt((N1, sign((M1, attestCheckRes, policyEvalRes), skKC), hash((M1, attestCheckRes, policyEvalRes))), pkDCtrl)).
+    let (xN1: nonce, signedVerifyMfaReq: bitstring, hashedVerifyMfaReq: bitstring) = decrypt(encM5, skASEV) in
+    let (M5: bitstring) = checksign(signedVerifyMfaReq, pkZTPE) in
+    if (hashedVerifyMfaReq = hash(M5)) then
+    if (xN1 = N1) then
+    if (M5 = verifyMfaReq) then
+    (* notify Bend after M5 *)
+    out(c, encrypt((N1, sign(M5, skASEV), hash(M5)), pkBend)).
 
 
-let processDCtrl(skDCtrl: skey, pkU: pkey, pkKC: pkey) =
-    in(c, xKC: host);
+let processBend(skBend: skey, pkU: pkey, pkASEV: pkey, pkZTPE: pkey) =
+    in(c, (xU: host, xASEV: host, xZTPE: host));
+    if (xU = U) then
+    if (xASEV = ASEV) then
+    if (xZTPE = ZTPE) then
+    let pkBend = pk(skBend) in
+
+    (* ASEV notification after M5 *)
+    in(c, encNotify: bitstring);
+    let (N1: nonce, signedNotify: bitstring, hashedNotify: bitstring) = decrypt(encNotify, skBend) in
+    let (Mnotify: bitstring) = checksign(signedNotify, pkASEV) in
+    if (hashedNotify = hash(Mnotify)) then
+    if (Mnotify = verifyMfaReq) then
+    event beginMfa(mfaReq);
+    (* M6 *)
+    out(c, encrypt((N1, sign(mfaReq, skBend), hash(mfaReq)), pkU));
+
+    (* M7 *)
+    in(c, encM7: bitstring);
+    let (xN1: nonce, signedMfaRes: bitstring, hashedMfaRes: bitstring) = decrypt(encM7, skBend) in
+    let (M7: bitstring) = checksign(signedMfaRes, pkU) in
+    if (hashedMfaRes = hash(M7)) then
+    if (xN1 = N1) then
+    if (M7 = mfaRes) then
+    event endMfa(M7);
+    (* M8 *)
+    out(c, encrypt((N1, sign((verifyMfaReq, verifyMfaRes), skBend), hash((verifyMfaReq, verifyMfaRes))), pkZTPE)).
+
+
+let processZTPE(skZTPE: skey, pkKC: pkey, pkASEV: pkey, pkBend: pkey, pkDCtrl: pkey) =
+    in(c, (xKC: host, xASEV: host, xBend: host, xDCtrl: host));
     if (xKC = KC) then
+    if (xASEV = ASEV) then
+    if (xBend = Bend) then
+    if (xDCtrl = DCtrl) then
+    let pkZTPE = pk(skZTPE) in
+
+    (* M4 *)
+    in(c, encM4: bitstring);
+    let (N1: nonce, signedPolicyEvalReq: bitstring, hashedPolicyEvalReq: bitstring) = decrypt(encM4, skZTPE) in
+    let (M4: bitstring) = checksign(signedPolicyEvalReq, pkKC) in
+    if (hashedPolicyEvalReq = hash(M4)) then
+    if (M4 = policyEvalReq) then
+    event beginVerifyMfa(verifyMfaReq);
+    (* M5 *)
+    out(c, encrypt((N1, sign(verifyMfaReq, skZTPE), hash(verifyMfaReq)), pkASEV));
+
+    (* M8 *)
+    in(c, encM8: bitstring);
+    let (xN1: nonce, signedVerifyMfaRes: bitstring, hashedVerifyMfaRes: bitstring) = decrypt(encM8, skZTPE) in
+    let (M8pair: bitstring) = checksign(signedVerifyMfaRes, pkBend) in
+    if (hashedVerifyMfaRes = hash(M8pair)) then
+    if (xN1 = N1) then
+    if (M8pair = (verifyMfaReq, verifyMfaRes)) then
+    event endVerifyMfa(verifyMfaRes);
+    event endPolicyEval(policyEvalRes);
+    (* M9 *)
+    out(c, encrypt((N1, sign((M4, policyEvalRes), skZTPE), hash((M4, policyEvalRes))), pkDCtrl)).
+
+
+let processDCtrl(skDCtrl: skey, pkU: pkey, pkZTPE: pkey) =
+    in(c, xZTPE: host);
+    if (xZTPE = ZTPE) then
     let pkDCtrl = pk(skDCtrl) in
 
-    (* KC trigger after M5 *)
-    in(c, encTrigger: bitstring);
-    let (N1: nonce, signedTrigger: bitstring, hashedTrigger: bitstring) = decrypt(encTrigger, skDCtrl) in
-    let (Mtrigger: bitstring) = checksign(signedTrigger, pkKC) in
-    if (hashedTrigger = hash(Mtrigger)) then
-    if (Mtrigger = (resourceAccessReq, attestCheckRes, policyEvalRes)) then
-    (* M6 *)
+    (* M9 *)
+    in(c, encM9: bitstring);
+    let (N1: nonce, signedPolicyEvalRes: bitstring, hashedPolicyEvalRes: bitstring) = decrypt(encM9, skDCtrl) in
+    let (M9pair: bitstring) = checksign(signedPolicyEvalRes, pkZTPE) in
+    if (hashedPolicyEvalRes = hash(M9pair)) then
+    if (M9pair = (policyEvalReq, policyEvalRes)) then
+    (* M10 *)
     out(c, encrypt((N1, sign(resourceAccessRes, skDCtrl), hash(resourceAccessRes)), pkU)).
 
 
@@ -210,18 +282,18 @@ process
     new skBend: skey;
     new skASEV: skey;
     new skKC: skey;
-    new skPtclMnt: skey;
+    new skZTPE: skey;
     new skDCtrl: skey;
     let pkU = pk(skU) in out(c, pkU);
     let pkBend = pk(skBend) in out(c, pkBend);
     let pkASEV = pk(skASEV) in out(c, pkASEV);
     let pkKC = pk(skKC) in out(c, pkKC);
-    let pkPtclMnt = pk(skPtclMnt) in out(c, pkPtclMnt);
+    let pkZTPE = pk(skZTPE) in out(c, pkZTPE);
     let pkDCtrl = pk(skDCtrl) in out(c, pkDCtrl);
 
-    ( (!processU(skU, pkKC, pkDCtrl))
-    | (!processBend(skBend, pkASEV, pkKC))
-    | (!processASEV(skASEV, pkKC, pkBend))
-    | (!processPtclMnt(skPtclMnt, pkKC))
-    | (!processKC(skKC, pkU, pkBend, pkASEV, pkPtclMnt, pkDCtrl))
-    | (!processDCtrl(skDCtrl, pkU, pkKC)) )
+    ( (!processU(skU, pkKC, pkBend, pkDCtrl))
+    | (!processKC(skKC, pkU, pkASEV, pkZTPE))
+    | (!processASEV(skASEV, pkKC, pkZTPE, pkBend))
+    | (!processBend(skBend, pkU, pkASEV, pkZTPE))
+    | (!processZTPE(skZTPE, pkKC, pkASEV, pkBend, pkDCtrl))
+    | (!processDCtrl(skDCtrl, pkU, pkZTPE)) )

@@ -74,10 +74,18 @@ query registryCheckReq: bitstring, registryCheckRes: bitstring;
       inj-event(endRegistryCheck(registryCheckRes)) ==> inj-event(beginRegistryCheck(registryCheckReq)).
 
 query attestCheckReq: bitstring, attestCheckRes: bitstring;
-      inj-event(endAttestCheck(attestCheckRes)) ==> inj-event(beginAttestCheck(attestCheckReq)).
+      event(endAttestCheck(attestCheckRes)) ==> event(beginAttestCheck(attestCheckReq)).
 
 query oidcAuthRes: bitstring, loginSuccess: bitstring;
       inj-event(endLogin(loginSuccess)) ==> inj-event(endOidcAuth(oidcAuthRes)).
+
+(* Device authentication: login success requires a prior attestation check. *)
+query loginSuccess: bitstring, attestCheckRes: bitstring;
+      event(endLogin(loginSuccess)) ==> event(endAttestCheck(attestCheckRes)).
+
+(* Entity agreement: login success requires a prior registry check of the user/device. *)
+query loginSuccess: bitstring, registryCheckRes: bitstring;
+      event(endLogin(loginSuccess)) ==> event(endRegistryCheck(registryCheckRes)).
 
 
 let processU(skU: skey, pkBend: pkey, pkKC: pkey) =
@@ -163,6 +171,7 @@ let processKC(skKC: skey, pkBend: pkey, pkASEV: pkey, pkU: pkey) =
     if (hashedAttestCheckRes = hash(M7pair)) then
     if (yN1 = N1) then
     if (M7pair = (attestCheckReq, attestCheckRes)) then
+    event endAttestCheck(attestCheckRes);
     (* M8 *)
     out(c, encrypt((N1, sign(loginSuccess, skKC), hash(loginSuccess)), pkU)).
 

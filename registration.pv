@@ -5,10 +5,14 @@
     M3  :  ASEV  ==>  Bend  : [N1, (attestDeviceRes)]_https
     M4  :  Bend  ==>  KC    : [N1, (registrationReq)]_https
     M5  :  KC    ==>  Bend  : [N1, (registrationRes)]_https
-    M6  :  Bend  ==>  U     : [N1, (deviceRegRes, setQueReq)]_https
-    M7  :  ASEV  ==>  Bend  : [N1, (setQueRes)]_https
-    M8  :  Bend  ==>  U     : [System Ready Notification]_https
+    M6  :  U     ==>  Bend  : [N1, (mfaRegOpReq)]_https
+    M7  :  Bend  ==>  U     : [N1, (mfaRegOpRes)]_https
+    M8  :  U     ==>  Bend  : [N1, (mfaRegReq)]_https
+    M9  :  Bend  ==>  ASEV  : [N1, (storeInfoReq)]_https
+    M10 :  ASEV  ==>  Bend  : [N1, (storeInfoRes)]_https
+    M11 :  Bend  ==>  U     : [N1, (mfaReqRes, deviceRegRes)]_https
 
+                  (Bend notifies U after M5)
 *)
 
 
@@ -45,14 +49,29 @@ free U, Bend, ASEV, KC: host.
 
 (* Secret declaration *)
 free deviceRegReq, attestDeviceReq, attestDeviceRes, registrationReq, registrationRes,
-     deviceRegRes, setQueReq, setQueRes, sysReadyNotif : bitstring[private].
+     mfaRegOpReq, mfaRegOpRes, mfaRegReq, storeInfoReq, storeInfoRes,
+     mfaReqRes, deviceRegRes : bitstring[private].
 
 (* Secrecy queries *)
 query attacker(attestDeviceRes);
       attacker(registrationRes);
-      attacker(deviceRegRes);
-      attacker(setQueRes);
-      attacker(sysReadyNotif).
+      attacker(mfaRegOpRes);
+      attacker(storeInfoRes);
+      attacker(mfaReqRes);
+      attacker(deviceRegRes).
+
+(* --- Events by message step --- *)
+(* M1  (U → Bend)       : event beginRegistration invokes when U sends deviceRegReq. *)
+(* M2  (Bend → ASEV)    : event beginAttestation invokes when Bend sends attestDeviceReq. *)
+(* M3  (ASEV → Bend)    : event endAttestation marks when Bend obtains attestDeviceRes. *)
+(* M4  (Bend → KC)      : event beginKeyRegistration invokes when Bend sends registrationReq. *)
+(* M5  (KC → Bend)      : event endKeyRegistration marks when Bend obtains registrationRes. *)
+(* M6  (U → Bend)       : event beginMfaRegOp invokes when U sends mfaRegOpReq. *)
+(* M7  (Bend → U)       : event endMfaRegOp marks when U obtains mfaRegOpRes. *)
+(* M8  (U → Bend)       : event beginMfaReg invokes when U sends mfaRegReq. *)
+(* M9  (Bend → ASEV)    : event beginStoreInfo invokes when Bend sends storeInfoReq. *)
+(* M10 (ASEV → Bend)    : event endStoreInfo marks when Bend obtains storeInfoRes. *)
+(* M11 (Bend → U)       : event endRegistration marks when U obtains mfaReqRes and deviceRegRes. *)
 
 event beginRegistration(bitstring).
 event endRegistration(bitstring).
@@ -60,10 +79,11 @@ event beginAttestation(bitstring).
 event endAttestation(bitstring).
 event beginKeyRegistration(bitstring).
 event endKeyRegistration(bitstring).
-event beginSetQueue(bitstring).
-event endSetQueue(bitstring).
-event beginSysReady(bitstring).
-event endSysReady(bitstring).
+event beginMfaRegOp(bitstring).
+event endMfaRegOp(bitstring).
+event beginMfaReg(bitstring).
+event beginStoreInfo(bitstring).
+event endStoreInfo(bitstring).
 
 
 (* Correspondence queries *)
@@ -76,11 +96,22 @@ query attestDeviceReq: bitstring, attestDeviceRes: bitstring;
 query registrationReq: bitstring, registrationRes: bitstring;
       event(endKeyRegistration(registrationRes)) ==> event(beginKeyRegistration(registrationReq)).
 
-query setQueReq: bitstring, setQueRes: bitstring;
-      inj-event(endSetQueue(setQueRes)) ==> inj-event(beginSetQueue(setQueReq)).
+query mfaRegOpReq: bitstring, mfaRegOpRes: bitstring;
+      event(endMfaRegOp(mfaRegOpRes)) ==> event(beginMfaRegOp(mfaRegOpReq)).
 
-query deviceRegRes: bitstring, sysReadyNotif: bitstring;
-      inj-event(endSysReady(sysReadyNotif)) ==> inj-event(endRegistration(deviceRegRes)).
+query storeInfoReq: bitstring, storeInfoRes: bitstring;
+      event(endStoreInfo(storeInfoRes)) ==> event(beginStoreInfo(storeInfoReq)).
+
+query deviceRegRes: bitstring, mfaRegReq: bitstring;
+      inj-event(endRegistration(deviceRegRes)) ==> inj-event(beginMfaReg(mfaRegReq)).
+
+(* Device authentication: registration completes only after attestation. *)
+query deviceRegRes: bitstring, attestDeviceRes: bitstring;
+      event(endRegistration(deviceRegRes)) ==> event(endAttestation(attestDeviceRes)).
+
+(* MFA binding: registration completes only after MFA enrollment. *)
+query deviceRegRes: bitstring, mfaRegOpRes: bitstring;
+      inj-event(endRegistration(deviceRegRes)) ==> inj-event(endMfaRegOp(mfaRegOpRes)).
 
 
 let processU(skU: skey, pkBend: pkey) =
@@ -93,24 +124,38 @@ let processU(skU: skey, pkBend: pkey) =
     (* M1 *)
     out(c, encrypt((N1, sign(deviceRegReq, skU), hash(deviceRegReq)), pkBend));
 
+    (* Bend notification after M5 *)
+    in(c, encNotify: bitstring);
+    let (nN1: nonce, signedNotify: bitstring, hashedNotify: bitstring) = decrypt(encNotify, skU) in
+    let (Mnotify: bitstring) = checksign(signedNotify, pkBend) in
+    if (hashedNotify = hash(Mnotify)) then
+    if (nN1 = N1) then
+    event beginMfaRegOp(mfaRegOpReq);
     (* M6 *)
-    in(c, encM6: bitstring);
-    let (xN1: nonce, signedDeviceRegRes: bitstring, hashedDeviceRegRes: bitstring,
-         signedSetQueReq: bitstring, hashedSetQueReq: bitstring) = decrypt(encM6, skU) in
-    let (M6a: bitstring) = checksign(signedDeviceRegRes, pkBend) in
-    let (M6b: bitstring) = checksign(signedSetQueReq, pkBend) in
-    if (hashedDeviceRegRes = hash(M6a)) then
-    if (hashedSetQueReq = hash(M6b)) then
-    if (xN1 = N1) then
-    event endRegistration(M6a);
+    out(c, encrypt((N1, sign(mfaRegOpReq, skU), hash(mfaRegOpReq)), pkBend));
 
+    (* M7 *)
+    in(c, encM7: bitstring);
+    let (xN1: nonce, signedMfaRegOpRes: bitstring, hashedMfaRegOpRes: bitstring) = decrypt(encM7, skU) in
+    let (M7: bitstring) = checksign(signedMfaRegOpRes, pkBend) in
+    if (hashedMfaRegOpRes = hash(M7)) then
+    if (xN1 = N1) then
+    if (M7 = mfaRegOpRes) then
+    event endMfaRegOp(M7);
+    event beginMfaReg(mfaRegReq);
     (* M8 *)
-    in(c, encM8: bitstring);
-    let (yN1: nonce, signedSysReady: bitstring, hashedSysReady: bitstring) = decrypt(encM8, skU) in
-    let (M8: bitstring) = checksign(signedSysReady, pkBend) in
-    if (hashedSysReady = hash(M8)) then
+    out(c, encrypt((N1, sign(mfaRegReq, skU), hash(mfaRegReq)), pkBend));
+
+    (* M11 *)
+    in(c, encM11: bitstring);
+    let (yN1: nonce, signedMfaReqRes: bitstring, hashedMfaReqRes: bitstring,
+         signedDeviceRegRes: bitstring, hashedDeviceRegRes: bitstring) = decrypt(encM11, skU) in
+    let (M11a: bitstring) = checksign(signedMfaReqRes, pkBend) in
+    let (M11b: bitstring) = checksign(signedDeviceRegRes, pkBend) in
+    if (hashedMfaReqRes = hash(M11a)) then
+    if (hashedDeviceRegRes = hash(M11b)) then
     if (yN1 = N1) then
-    event endSysReady(M8).
+    event endRegistration(M11b).
 
 
 let processASEV(skASEV: skey, pkBend: pkey) =
@@ -124,16 +169,16 @@ let processASEV(skASEV: skey, pkBend: pkey) =
     let (M2: bitstring) = checksign(signedAttestReq, pkBend) in
     if (hashedAttestReq = hash(M2)) then
     (* M3 *)
-    out(c, encrypt((xN1, sign(attestDeviceRes, skASEV), hash(attestDeviceRes)), pkBend));
+    out(c, encrypt((xN1, sign((M2, attestDeviceRes), skASEV), hash((M2, attestDeviceRes))), pkBend));
 
-    (* setQueReq from Bend (after M6 at Bend) *)
-    in(c, encSetQue: bitstring);
-    let (yN1: nonce, signedSetQueReq: bitstring, hashedSetQueReq: bitstring) = decrypt(encSetQue, skASEV) in
-    let (MsetQue: bitstring) = checksign(signedSetQueReq, pkBend) in
-    if (hashedSetQueReq = hash(MsetQue)) then
-    if (MsetQue = setQueReq) then
-    (* M7 *)
-    out(c, encrypt((yN1, sign((MsetQue, setQueRes), skASEV), hash((MsetQue, setQueRes))), pkBend)).
+    (* M9 *)
+    in(c, encM9: bitstring);
+    let (yN1: nonce, signedStoreInfoReq: bitstring, hashedStoreInfoReq: bitstring) = decrypt(encM9, skASEV) in
+    let (M9: bitstring) = checksign(signedStoreInfoReq, pkBend) in
+    if (hashedStoreInfoReq = hash(M9)) then
+    if (M9 = storeInfoReq) then
+    (* M10 *)
+    out(c, encrypt((yN1, sign((M9, storeInfoRes), skASEV), hash((M9, storeInfoRes))), pkBend)).
 
 
 let processKC(skKC: skey, pkBend: pkey) =
@@ -170,10 +215,11 @@ let processBend(skBend: skey, pkU: pkey, pkASEV: pkey, pkKC: pkey) =
     (* M3 *)
     in(c, encM3: bitstring);
     let (xN1: nonce, signedAttestRes: bitstring, hashedAttestRes: bitstring) = decrypt(encM3, skBend) in
-    let (M3: bitstring) = checksign(signedAttestRes, pkASEV) in
-    if (hashedAttestRes = hash(M3)) then
+    let (M3pair: bitstring) = checksign(signedAttestRes, pkASEV) in
+    if (hashedAttestRes = hash(M3pair)) then
     if (xN1 = N1) then
-    event endAttestation(M3);
+    if (M3pair = (attestDeviceReq, attestDeviceRes)) then
+    event endAttestation(attestDeviceRes);
     event beginKeyRegistration(registrationReq);
     (* M4 *)
     out(c, encrypt((N1, sign(registrationReq, skBend), hash(registrationReq)), pkKC));
@@ -185,25 +231,39 @@ let processBend(skBend: skey, pkU: pkey, pkASEV: pkey, pkKC: pkey) =
     if (hashedRegRes = hash(M5)) then
     if (yN1 = N1) then
     event endKeyRegistration(M5);
-    event beginSetQueue(setQueReq);
+    (* notify U after M5 *)
+    out(c, encrypt((N1, sign(registrationRes, skBend), hash(registrationRes)), pkU));
+
     (* M6 *)
-    out(c, encrypt((N1, sign(deviceRegRes, skBend), hash(deviceRegRes),
-                    sign(setQueReq, skBend), hash(setQueReq)), pkU));
-
-    (* forward setQueReq to ASEV *)
-    out(c, encrypt((N1, sign(setQueReq, skBend), hash(setQueReq)), pkASEV));
-
-    (* M7 *)
-    in(c, encM7: bitstring);
-    let (zN1: nonce, signedSetQueRes: bitstring, hashedSetQueRes: bitstring) = decrypt(encM7, skBend) in
-    let (M7pair: bitstring) = checksign(signedSetQueRes, pkASEV) in
-    if (hashedSetQueRes = hash(M7pair)) then
+    in(c, encM6: bitstring);
+    let (zN1: nonce, signedMfaRegOpReq: bitstring, hashedMfaRegOpReq: bitstring) = decrypt(encM6, skBend) in
+    let (M6: bitstring) = checksign(signedMfaRegOpReq, pkU) in
+    if (hashedMfaRegOpReq = hash(M6)) then
     if (zN1 = N1) then
-    if (M7pair = (setQueReq, setQueRes)) then
-    event endSetQueue(setQueRes);
-    event beginSysReady(sysReadyNotif);
+    (* M7 *)
+    out(c, encrypt((N1, sign(mfaRegOpRes, skBend), hash(mfaRegOpRes)), pkU));
+
     (* M8 *)
-    out(c, encrypt((N1, sign(sysReadyNotif, skBend), hash(sysReadyNotif)), pkU)).
+    in(c, encM8: bitstring);
+    let (wN1: nonce, signedMfaRegReq: bitstring, hashedMfaRegReq: bitstring) = decrypt(encM8, skBend) in
+    let (M8: bitstring) = checksign(signedMfaRegReq, pkU) in
+    if (hashedMfaRegReq = hash(M8)) then
+    if (wN1 = N1) then
+    event beginStoreInfo(storeInfoReq);
+    (* M9 *)
+    out(c, encrypt((N1, sign(storeInfoReq, skBend), hash(storeInfoReq)), pkASEV));
+
+    (* M10 *)
+    in(c, encM10: bitstring);
+    let (vN1: nonce, signedStoreInfoRes: bitstring, hashedStoreInfoRes: bitstring) = decrypt(encM10, skBend) in
+    let (M10pair: bitstring) = checksign(signedStoreInfoRes, pkASEV) in
+    if (hashedStoreInfoRes = hash(M10pair)) then
+    if (vN1 = N1) then
+    if (M10pair = (storeInfoReq, storeInfoRes)) then
+    event endStoreInfo(storeInfoRes);
+    (* M11 *)
+    out(c, encrypt((N1, sign(mfaReqRes, skBend), hash(mfaReqRes),
+                    sign(deviceRegRes, skBend), hash(deviceRegRes)), pkU)).
 
 
 process
